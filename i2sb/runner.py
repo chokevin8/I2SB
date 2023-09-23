@@ -199,7 +199,8 @@ class Runner(object):
             if it % 10 == 0:
                 self.writer.add_scalar(it, 'loss', loss.detach())
 
-            if it % 5000 == 0:
+            # if it % 5000 == 0:
+            if it % opt.save_pt_every == 0:
                 if opt.global_rank == 0:
                     torch.save({
                         "net": self.net.state_dict(),
@@ -211,7 +212,8 @@ class Runner(object):
                 if opt.distributed:
                     torch.distributed.barrier()
 
-            if it == 500 or it % 3000 == 0: # 0, 0.5k, 3k, 6k 9k
+            # if it == 500 or it % 3000 == 0: # 0, 0.5k, 3k, 6k 9k
+            if it == 500 or it % opt.val_every == 0: # 0, 0.5k, and every val_every
                 net.eval()
                 self.evaluation(opt, it, val_loader, corrupt_method)
                 net.train()
@@ -242,7 +244,7 @@ class Runner(object):
         with self.ema.average_parameters():
             self.net.eval()
 
-            def pred_x0_fn(xt, step):
+            def pred_x0_fn(xt, step): # function to take noisy image and time step as input and return prediction for original iamge at that time step
                 step = torch.full((xt.shape[0],), step, device=opt.device, dtype=torch.long)
                 out = self.net(xt, step, cond=cond)
                 return self.compute_pred_x0(step, xt, out, clip_denoise=clip_denoise)
@@ -254,7 +256,7 @@ class Runner(object):
         b, *xdim = x1.shape
         assert xs.shape == pred_x0.shape == (b, log_count, *xdim)
 
-        return xs, pred_x0
+        return xs, pred_x0 #returns xs, a tensor containing denoised images at each log step, and pred_x0 , a tensor containing predictions for the original image at each log step
 
     @torch.no_grad()
     def evaluation(self, opt, it, val_loader, corrupt_method):
@@ -280,16 +282,16 @@ class Runner(object):
         batch, len_t, *xdim = xs.shape
         assert img_clean.shape == img_corrupt.shape == (batch, *xdim)
         assert xs.shape == pred_x0s.shape
-        assert y.shape == (batch,)
+        # assert y.shape == (batch,)
         log.info(f"Generated recon trajectories: size={xs.shape}")
 
         def log_image(tag, img, nrow=10):
             self.writer.add_image(it, tag, tu.make_grid((img+1)/2, nrow=nrow)) # [1,1] -> [0,1]
 
-        def log_accuracy(tag, img):
-            pred = self.resnet(img.to(opt.device)) # input range [-1,1]
-            accu = self.accuracy(pred, y.to(opt.device))
-            self.writer.add_scalar(it, tag, accu)
+        # def log_accuracy(tag, img):
+        #     pred = self.resnet(img.to(opt.device)) # input range [-1,1]
+        #     accu = self.accuracy(pred, y.to(opt.device))
+        #     self.writer.add_scalar(it, tag, accu)
 
         log.info("Logging images ...")
         img_recon = xs[:, 0, ...]
@@ -300,9 +302,10 @@ class Runner(object):
         log_image("debug/recon_traj",      xs.reshape(-1, *xdim),      nrow=len_t)
 
         log.info("Logging accuracies ...")
-        log_accuracy("accuracy/clean",   img_clean)
-        log_accuracy("accuracy/corrupt", img_corrupt)
-        log_accuracy("accuracy/recon",   img_recon)
+        # log_accuracy("accuracy/clean",   img_clean)
+        # log_accuracy("accuracy/corrupt", img_corrupt)
+        # log_accuracy("accuracy/recon",   img_recon)
 
         log.info(f"========== Evaluation finished: iter={it} ==========")
         torch.cuda.empty_cache()
+

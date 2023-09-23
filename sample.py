@@ -31,7 +31,7 @@ from i2sb import ckpt_util
 import colored_traceback.always
 from ipdb import set_trace as debug
 
-RESULT_DIR = Path("results")
+RESULT_DIR = Path("results") # I2SB/results
 
 def set_seed(seed):
     # https://github.com/pytorch/pytorch/issues/7068
@@ -42,7 +42,8 @@ def set_seed(seed):
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed) # if you are using multi-GPU.
 
-def build_subset_per_gpu(opt, dataset, log):
+def build_subset_per_gpu(opt, dataset, log): # create subset of dataset for distributed training
+
     n_data = len(dataset)
     n_gpu  = opt.global_size
     n_dump = (n_data % n_gpu > 0) * (n_gpu - n_data % n_gpu)
@@ -124,7 +125,7 @@ def compute_batch(ckpt_opt, corrupt_type, corrupt_method, out):
         corrupt_img = corrupt_method(clean_img.to(opt.device))
         x1 = corrupt_img.to(opt.device)
 
-    cond = x1.detach() if ckpt_opt.cond_x1 else None
+    cond = x1.detach() if ckpt_opt.cond_x1 else None #detach from gpu, move x1 to gpu to cpu for cond if cond_x1 = True
     if ckpt_opt.add_x1_noise: # only for decolor
         x1 = x1 + torch.randn_like(x1)
 
@@ -140,7 +141,7 @@ def main(opt):
     nfe = opt.nfe or ckpt_opt.interval-1
 
     # build corruption method
-    corrupt_method = build_corruption(opt, log, corrupt_type=corrupt_type)
+    corrupt_method = build_corruption(opt, log, corrupt_type=corrupt_type) #for image to image translation where corrupt_type = mixture, this does nothing.
 
     # build imagenet val dataset
     val_dataset = build_val_dataset(opt, log, corrupt_type)
@@ -161,16 +162,16 @@ def main(opt):
         runner.net.diffusion_model.convert_to_fp16()
         runner.ema = ExponentialMovingAverage(runner.net.parameters(), decay=0.99) # re-init ema with fp16 weight
 
-    # create save folder
+    # create save folder for reconstructed images
     recon_imgs_fn = get_recon_imgs_fn(opt, nfe)
     log.info(f"Recon images will be saved to {recon_imgs_fn}!")
 
     recon_imgs = []
     ys = []
     num = 0
-    for loader_itr, out in enumerate(val_loader):
+    for loader_itr, out in enumerate(val_loader): #loader_itr = idx, and out = output of MixtureCorruptDatasetVal, which is three items: clean_img, corrupt_img, y
 
-        corrupt_img, x1, mask, cond, y = compute_batch(ckpt_opt, corrupt_type, corrupt_method, out)
+        corrupt_img, x1, mask, cond, y = compute_batch(ckpt_opt, corrupt_type, corrupt_method, out) # for mixture, x1 and mask should be empty.
 
         xs, _ = runner.ddpm_sampling(
             ckpt_opt, x1, mask=mask, cond=cond, clip_denoise=opt.clip_denoise, nfe=nfe, verbose=opt.n_gpu_per_node==1

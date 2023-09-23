@@ -30,6 +30,7 @@ class Image256Net(torch.nn.Module):
         with open(ckpt_pkl, "rb") as f:
             kwargs = pickle.load(f)
         kwargs["use_fp16"] = use_fp16
+        kwargs["in_channels"] = 6 # added, this is input_channel + conditioning channel (3 + 3 = 6) since both are RGB images
         self.diffusion_model = create_model(**kwargs)
         log.info(f"[Net] Initialized network from {ckpt_pkl=}! Size={util.count_parameters(self.diffusion_model)}!")
 

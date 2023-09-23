@@ -35,7 +35,7 @@ def build_corruption(opt, log, corrupt_type=None):
         assert kernel in ["uni", "gauss"]
         method = build_blur(opt, log, kernel)
 
-    elif 'mixture' in corrupt_type:
+    elif 'mixture' in corrupt_type: # no method if mixture, so pure image to image translation
         method = None #
     else:
         raise RuntimeWarning(f"Unknown corruption: {corrupt_type}!")

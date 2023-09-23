@@ -29,6 +29,13 @@ from i2sb import Runner, download_ckpt
 import colored_traceback.always
 from ipdb import set_trace as debug
 
+#added packages by me:
+from torch.utils.data import Dataset
+from torchvision import transforms as T
+import torch.nn as nn
+from PIL import Image
+from functools import partial
+
 RESULT_DIR = Path("results")
 
 def set_seed(seed):
@@ -51,6 +58,8 @@ def create_training_options():
     parser.add_argument("--master-address", type=str,   default='localhost', help="address for master")
     parser.add_argument("--node-rank",      type=int,   default=0,           help="the index of node")
     parser.add_argument("--num-proc-node",  type=int,   default=1,           help="The number of nodes in multi node env")
+    parser.add_argument("--save-pt-every",  type=int,   default= 5000,       help="Save latest model every x epochs") #added by kevin
+    parser.add_argument("--val-every",      type=int,   default = 3000,      help="Run validation every x epochs") #added by kevin
     # parser.add_argument("--amp",            action="store_true")
 
     # --------------- SB model ---------------
@@ -114,6 +123,63 @@ def create_training_options():
     assert opt.batch_size % opt.microbatch == 0, f"{opt.batch_size=} is not dividable by {opt.microbatch}!"
     return opt
 
+# this whole dataset class edited by kevin, as don't want to use lmdb. reference code that is edited from:  https://github.com/NVlabs/I2SB/issues/3
+class MyDataset(Dataset):
+    def __init__(self,opt,log,train):
+        super().__init__()
+        self.dataset_dir = opt.dataset_dir / ('train' if train else 'val')
+        self.corrupt_dir = self.dataset_dir / 'IHC' # corrupt to clean -> IHC2HE
+        self.clean_dir = self.dataset_dir / 'HE'
+        self.image_size = opt.image_size
+
+        if os.path.isdir(self.corrupt_dir):
+            self.corrupt_fnames = {os.path.relpath(os.path.join(root, fname), start=self.corrupt_dir) for
+                                   root, _dirs, files in os.walk(self.corrupt_dir) for fname in files}
+        else:
+            print(self.corrupt_dir)
+            raise IOError('corrupt path must point to a valid directory')
+
+        if os.path.isdir(self.clean_dir):
+            self.clean_fnames = {os.path.relpath(os.path.join(root, fname), start=self.clean_dir) for root, _dirs, files
+                                 in os.walk(self.clean_dir) for fname in files}
+        else:
+            raise IOError('clean path must point to a vald directory')
+
+        self.corrupt_image_fnames = sorted(fname for fname in self.corrupt_fnames if self._file_ext(fname) in '.png')
+        if len(self.corrupt_image_fnames) == 0:
+            raise IOError('No corrupt image files found in the specified path')
+
+        self.clean_image_fnames = sorted(fname for fname in self.clean_fnames if self._file_ext(fname) in '.png')
+        if len(self.clean_image_fnames) == 0:
+            raise IOError('No clean image files found in the specified path')
+
+        self.transform = T.Compose([
+            T.ToTensor(), # normalize [0,255] to [0,1]
+            T.Lambda(lambda t: (t * 2) - 1)  # convert [0,1] --> [-1, 1], since this is required in this training
+        ])
+
+        log.info(f"[Dataset] Built Imagenet dataset {self.corrupt_dir=}, size={len(self.corrupt_image_fnames)}!")
+        log.info(f"[Dataset] Built Imagenet dataset {self.clean_dir=}, size={len(self.clean_image_fnames)}!")
+
+    @staticmethod
+    def _file_ext(fname):
+        return os.path.splitext(fname)[1].lower()
+
+    def _file_to_array(self, fname):
+        return np.array(Image.open(os.path.join(self.dataset_dir,fname)))
+    def __len__(self):
+        return len(self.clean_image_fnames)
+
+    def __getitem__(self, index):
+        corrupt_fname = self.corrupt_image_fnames[index]
+        clean_fname = self.clean_image_fnames[index]
+        corrupt_img = self._file_to_array(os.path.join('IHC',corrupt_fname))
+        clean_img = self._file_to_array(os.path.join('HE',clean_fname))
+        corrupt_img = self.transform(corrupt_img)
+        clean_img = self.transform(clean_img)
+
+        return clean_img, corrupt_img, clean_img #clean_img, corrupt_img, y is original
+
 def main(opt):
     log = Logger(opt.global_rank, opt.log_dir)
     log.info("=======================================================")
@@ -126,9 +192,13 @@ def main(opt):
     if opt.seed is not None:
         set_seed(opt.seed + opt.global_rank)
 
-    # build imagenet dataset
-    train_dataset = imagenet.build_lmdb_dataset(opt, log, train=True)
-    val_dataset   = imagenet.build_lmdb_dataset(opt, log, train=False)
+    # build imagenet dataset (default original code)
+
+    # train_dataset = imagenet.build_lmdb_dataset(opt, log, train=True)
+    # val_dataset   = imagenet.build_lmdb_dataset(opt, log, train=False)
+    train_dataset = MyDataset(opt, log, train=True)
+    val_dataset = MyDataset(opt, log, train=False)
+
     # note: images should be normalized to [-1,1] for corruption methods to work properly
 
     if opt.corrupt == "mixture":
