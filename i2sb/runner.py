@@ -24,8 +24,13 @@ from evaluation import build_resnet50
 from . import util
 from .network import Image256Net
 from .diffusion import Diffusion
-
+from .loss_vit import Loss_vit
 from ipdb import set_trace as debug
+
+#added:
+from torch import nn
+from torchvision import transforms
+from torchvision.models import vgg16
 
 def build_optimizer_sched(opt, net, log):
 
@@ -66,6 +71,28 @@ def all_cat_cpu(opt, log, t):
     if not opt.distributed: return t.detach().cpu()
     gathered_t = dist_util.all_gather(t.to(opt.device), log=log)
     return torch.cat(gathered_t).detach().cpu()
+
+class VGGLoss(nn.Module):
+    def __init__(self,layer=8, reduction='mean'):
+        super().__init__()
+        self.reduction = reduction
+        self.normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                              std=[0.229, 0.224, 0.225])
+        self.model = vgg16(pretrained=True).features[:layer + 1].cuda()
+        self.model.eval()
+        self.model.requires_grad_(False)
+    def normalize_image(self,input):
+        return (input+1)/2
+    def get_features(self, input):
+        return self.model(self.normalize(input))
+    def forward(self, input, target):
+        sep = input.shape[0]
+        input = self.normalize_image(input)
+        target = self.normalize_image(target)
+        batch = torch.cat([input, target])
+        feats = self.get_features(batch)
+        input_feats, target_feats = feats[:sep], feats[sep:]
+        return F.mse_loss(input_feats, target_feats, reduction=self.reduction)
 
 class Runner(object):
     def __init__(self, opt, log, save_opt=True):
@@ -146,6 +173,9 @@ class Runner(object):
 
         return x0, x1, mask, y, cond
 
+    #implementation of VGGLoss (added by kevin, modified from https://github.com/crowsonkb/vgg_loss/blob/master/vgg_loss.py)
+
+
     def train(self, opt, train_dataset, val_dataset, corrupt_method):
         self.writer = util.build_log_writer(opt)
         log = self.log
@@ -182,7 +212,19 @@ class Runner(object):
                     pred = mask * pred
                     label = mask * label
 
-                loss = F.mse_loss(pred, label)
+                #calculate ViT loss:
+                # ViT_loss = Loss_vit(lambda_ssim=5.0,lambda_contra_ssim=5.0,lambda_dir_cls=0.0,lambda_trg=10).eval() # no grad, weigh lambda_ssim and lambda_contra_ssim equally
+                # default, lambda_ssim = 1000, lambda_contra_ssim = 200, lambda_dir_cls = 100, lambda_trg = 2000
+                # vit_loss = ViT_loss(pred,x1,out_prev=None, use_dir=True, target=label,frac_cont=1.0)[0]
+                # print(f"Vit loss is {vit_loss: .3f}")
+                # print(f"MSE loss  is {F.mse_loss(pred,label): .3f}")
+                # loss = 50 * F.mse_loss(pred,label) + vit_loss
+                # loss = F.mse_loss(pred, label) + 0.05 * VGGLoss()(pred,label) + F.l1_loss(pred,label) # F.mse_loss is the equation 12 in the paper
+                # print(F.mse_loss(pred, label))
+                # print(VGGLoss()(pred,label))
+                # print(F.l1_loss(pred, label))
+
+                loss = F.mse_loss(pred,label)
                 loss.backward()
 
             optimizer.step()
@@ -207,7 +249,7 @@ class Runner(object):
                         "ema": ema.state_dict(),
                         "optimizer": optimizer.state_dict(),
                         "sched": sched.state_dict() if sched is not None else sched,
-                    }, opt.ckpt_path / "latest.pt")
+                    }, opt.ckpt_path / f"latest_{it}.pt")
                     log.info(f"Saved latest({it=}) checkpoint to {opt.ckpt_path=}!")
                 if opt.distributed:
                     torch.distributed.barrier()

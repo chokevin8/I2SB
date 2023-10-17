@@ -35,6 +35,7 @@ from torchvision import transforms as T
 import torch.nn as nn
 from PIL import Image
 from functools import partial
+from natsort import natsorted
 
 RESULT_DIR = Path("results")
 
@@ -113,7 +114,7 @@ def create_training_options():
     os.makedirs(opt.ckpt_path, exist_ok=True)
 
     if opt.ckpt is not None:
-        ckpt_file = RESULT_DIR / opt.ckpt / "latest.pt"
+        ckpt_file = RESULT_DIR / opt.ckpt / "latest_old_5460.pt"
         assert ckpt_file.exists()
         opt.load = ckpt_file
     else:
@@ -133,23 +134,24 @@ class MyDataset(Dataset):
         self.image_size = opt.image_size
 
         if os.path.isdir(self.corrupt_dir):
-            self.corrupt_fnames = {os.path.relpath(os.path.join(root, fname), start=self.corrupt_dir) for
-                                   root, _dirs, files in os.walk(self.corrupt_dir) for fname in files}
+            self.corrupt_fnames = [os.path.join(self.corrupt_dir, x) for x in os.listdir(self.corrupt_dir) if x.endswith(".png")]
         else:
             print(self.corrupt_dir)
             raise IOError('corrupt path must point to a valid directory')
 
         if os.path.isdir(self.clean_dir):
-            self.clean_fnames = {os.path.relpath(os.path.join(root, fname), start=self.clean_dir) for root, _dirs, files
-                                 in os.walk(self.clean_dir) for fname in files}
+            self.clean_fnames = [os.path.join(self.clean_dir, x) for x in os.listdir(self.clean_dir) if x.endswith(".png")]
         else:
-            raise IOError('clean path must point to a vald directory')
+            raise IOError('clean path must point to a valid directory')
 
-        self.corrupt_image_fnames = sorted(fname for fname in self.corrupt_fnames if self._file_ext(fname) in '.png')
+        self.corrupt_image_fnames = [fname for fname in self.corrupt_fnames if self._file_ext(fname) in '.png']
+        self.corrupt_image_fnames = natsorted(self.corrupt_image_fnames)
         if len(self.corrupt_image_fnames) == 0:
             raise IOError('No corrupt image files found in the specified path')
 
-        self.clean_image_fnames = sorted(fname for fname in self.clean_fnames if self._file_ext(fname) in '.png')
+        self.clean_image_fnames = [fname for fname in self.clean_fnames if self._file_ext(fname) in '.png']
+        self.clean_image_fnames = natsorted(self.clean_image_fnames)
+
         if len(self.clean_image_fnames) == 0:
             raise IOError('No clean image files found in the specified path')
 
@@ -173,11 +175,14 @@ class MyDataset(Dataset):
     def __getitem__(self, index):
         corrupt_fname = self.corrupt_image_fnames[index]
         clean_fname = self.clean_image_fnames[index]
+        # print(corrupt_fname)
+        # print(clean_fname)
+        # if corrupt_fname.split("image")[1] != clean_fname.split("image")[1]: # for batch_size = 1 only
+        #     print("Please look at training data again, the images are not paired.")
         corrupt_img = self._file_to_array(os.path.join('IHC',corrupt_fname))
         clean_img = self._file_to_array(os.path.join('HE',clean_fname))
         corrupt_img = self.transform(corrupt_img)
         clean_img = self.transform(clean_img)
-
         return clean_img, corrupt_img, clean_img #clean_img, corrupt_img, y is original
 
 def main(opt):
