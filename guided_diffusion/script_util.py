@@ -13,8 +13,7 @@ from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
 from .unet import SuperResModel, UNetModel, EncoderUNetModel
 
-NUM_CLASSES = 1000
-
+NUM_CLASSES = 1000 # 1000 is default
 
 def diffusion_defaults():
     """
@@ -37,7 +36,7 @@ def classifier_defaults():
     Defaults for classifier models.
     """
     return dict(
-        image_size=64,
+        image_size=256,
         classifier_use_fp16=False,
         classifier_width=128,
         classifier_depth=2,
@@ -53,7 +52,7 @@ def model_and_diffusion_defaults():
     Defaults for image training.
     """
     res = dict(
-        image_size=64,
+        image_size=256,
         num_channels=128,
         num_res_blocks=2,
         num_heads=4,
@@ -62,7 +61,7 @@ def model_and_diffusion_defaults():
         attention_resolutions="16,8",
         channel_mult="",
         dropout=0.0,
-        class_cond=False,
+        class_cond=False, #default is False
         use_checkpoint=False,
         use_scale_shift_norm=True,
         resblock_updown=False,
@@ -395,11 +394,11 @@ def sr_create_model(
 def create_gaussian_diffusion(
     *,
     steps=1000,
-    learn_sigma=False,
-    sigma_small=False,
+    learn_sigma=False, # we don't learn the variances or sigma.
+    sigma_small=False, # if sigma_small false, sigma is large, which means higher initial variance allows to make larger changes to input signal in early stages of diffusion
     noise_schedule="linear",
     use_kl=False,
-    predict_xstart=False,
+    predict_xstart=False, # False means we predict noise epsilon instead of image x, which is what he want.
     rescale_timesteps=False,
     rescale_learned_sigmas=False,
     timestep_respacing="",
@@ -414,7 +413,7 @@ def create_gaussian_diffusion(
         loss_type = gd.LossType.MSE
     if not timestep_respacing:
         timestep_respacing = [steps]
-    return SpacedDiffusion(
+    return SpacedDiffusion( #SpacedDiffusoin calls GaussianDiffusion from respace.py
         use_timesteps=space_timesteps(steps, timestep_respacing),
         betas=betas,
         model_mean_type=(

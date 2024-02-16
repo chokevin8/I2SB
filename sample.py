@@ -28,9 +28,15 @@ from corruption import build_corruption
 from dataset import imagenet
 from i2sb import ckpt_util
 
+#added
+from torch.utils.data import Dataset
+from torchvision import transforms as T
+import torch.nn as nn
+from PIL import Image
+from natsort import natsorted
+
 import colored_traceback.always
 from ipdb import set_trace as debug
-from natsort import natsorted
 
 RESULT_DIR = Path("results") # I2SB/results
 
@@ -83,6 +89,108 @@ def build_partition(opt, full_dataset, log):
     log.info(f"[Dataset] Built partition={opt.partition}, {start_idx=}, {end_idx=}! Now size={len(subset)}!")
     return subset
 
+
+def custom_transform(t):
+    #convert to tensor
+    tensor = T.ToTensor()(t)
+    #scale to [-1, 1]
+    scaled_tensor = (tensor * 2) - 1
+    return scaled_tensor
+
+
+class MyDataset(Dataset):
+    def __init__(self, opt, log, train):
+        super().__init__()
+        self.dataset_dir = opt.dataset_dir / ('train' if train else 'val')
+        self.corrupt_dir = self.dataset_dir / 'HE'  # corrupt to clean -> IHC2HE
+        # self.clean_dir = self.dataset_dir / 'IHC'
+        self.seg_map_dir = self.dataset_dir / 'HE_segmentation_map'
+        self.image_size = opt.image_size
+
+        if opt.image_type == "jpg":
+            if os.path.isdir(self.corrupt_dir):
+                self.corrupt_fnames = [os.path.join(self.corrupt_dir, x) for x in os.listdir(self.corrupt_dir) if
+                                       x.endswith(".jpg")]
+            else:
+                print(self.corrupt_dir)
+                raise IOError('corrupt path must point to a valid directory')
+        else:
+            if os.path.isdir(self.corrupt_dir):
+                self.corrupt_fnames = [os.path.join(self.corrupt_dir, x) for x in os.listdir(self.corrupt_dir) if
+                                       x.endswith(".png")]
+            else:
+                print(self.corrupt_dir)
+                raise IOError('corrupt path must point to a valid directory')
+
+        # if os.path.isdir(self.clean_dir):
+        #     self.clean_fnames = [os.path.join(self.clean_dir, x) for x in os.listdir(self.clean_dir) if
+        #                          x.endswith(".png")]
+        # else:
+        #     raise IOError('clean path must point to a valid directory')
+        #
+        if os.path.isdir(self.seg_map_dir):
+            self.seg_map_fnames = [os.path.join(self.seg_map_dir, x) for x in os.listdir(self.seg_map_dir) if
+                                   x.endswith(".tif")]
+        else:
+            raise IOError('seg_map path must point to a valid directory')
+
+        if opt.image_type == "jpg":
+            self.corrupt_image_fnames = [fname for fname in self.corrupt_fnames if self._file_ext(fname) in '.jpg']
+        else:
+            self.corrupt_image_fnames = [fname for fname in self.corrupt_fnames if self._file_ext(fname) in '.png']
+        self.corrupt_image_fnames = natsorted(self.corrupt_image_fnames)
+        if len(self.corrupt_image_fnames) == 0:
+            raise IOError('No corrupt image files found in the specified path')
+
+        # self.clean_image_fnames = [fname for fname in self.clean_fnames if self._file_ext(fname) in '.png']
+        # self.clean_image_fnames = natsorted(self.clean_image_fnames)
+        # if len(self.clean_image_fnames) == 0:
+        #     raise IOError('No clean image files found in the specified path')
+        #
+        self.seg_map_fnames = [fname for fname in self.seg_map_fnames if self._file_ext(fname) in '.tif']
+        self.seg_map_fnames = natsorted(self.seg_map_fnames)
+        if len(self.seg_map_fnames) == 0:
+            raise IOError('No seg_map image files found in the specified path')
+
+        self.transform = T.Compose([
+            # T.RandomHorizontalFlip(p=0.5), # added since tissue is not symmetric, but removed since may not be consistent with tissue map
+            # T.RandomVerticalFlip(p=0.5), # added since tissue is not symmetric, but removed since may not be consistent with tissue map
+            T.ToTensor(),  # convert [0,255] to [0,1]
+            T.Lambda(lambda t: (t * 2) - 1)  # convert [0,1] --> [-1, 1], since this is required in this training
+        ])
+
+        log.info(f"[Dataset] Built Imagenet dataset {self.corrupt_dir=}, size={len(self.corrupt_image_fnames)}!")
+        # log.info(f"[Dataset] Built Imagenet dataset {self.clean_dir=}, size={len(self.clean_image_fnames)}!")
+        log.info(f"[Dataset] Built Imagenet dataset {self.seg_map_dir=}, size={len(self.seg_map_fnames)}!")  # added for seg map
+
+    @staticmethod
+    def _file_ext(fname):
+        return os.path.splitext(fname)[1].lower()
+
+    def _file_to_array(self, fname):
+        return np.array(Image.open(os.path.join(self.dataset_dir, fname)))
+
+    def __len__(self):
+        return len(self.corrupt_image_fnames)
+
+    def __getitem__(self, index):
+        corrupt_fname = self.corrupt_image_fnames[index]
+        # clean_fname = self.clean_image_fnames[index]
+        seg_map_fname = self.seg_map_fnames[index]  # added
+        # print(corrupt_fname)
+        # print(clean_fname)
+        # if corrupt_fname.split("image")[1] != clean_fname.split("image")[1]: # for batch_size = 1 only
+        #     print("Please look at training data again, the images are not paired.")
+        corrupt_img = self._file_to_array(os.path.join('IHC', corrupt_fname))  # IHC for IHC2HE, NS for NS2HE
+        # clean_img = self._file_to_array(os.path.join('HE', clean_fname))  # HE for both.
+        seg_img = self._file_to_array(os.path.join('HE_segmentation_map', seg_map_fname))
+        corrupt_img = self.transform(corrupt_img)
+        # clean_img = self.transform(clean_img)
+        seg_map = self.transform(seg_img)  # need to conserve the uint8 nature of the mask
+        return corrupt_img, seg_map
+        # return clean_img, corrupt_img, seg_map  # added code
+        # return clean_img, corrupt_img, clean_img # original code is this
+
 def build_val_dataset(opt, log, corrupt_type):
     if "sr4x" in corrupt_type:
         val_dataset = imagenet.build_lmdb_dataset(opt, log, train=False) # full 50k val
@@ -91,7 +199,8 @@ def build_val_dataset(opt, log, corrupt_type):
         val_dataset = imagenet.InpaintingVal10kSubset(opt, log, mask) # subset 10k val + mask
     elif corrupt_type == "mixture":
         from corruption.mixture import MixtureCorruptDatasetVal
-        val_dataset = imagenet.build_lmdb_dataset_val10k(opt, log)
+        # val_dataset = imagenet.build_lmdb_dataset_val10k(opt, log)
+        val_dataset = MyDataset(opt, log, train=False)
         val_dataset = MixtureCorruptDatasetVal(opt, val_dataset) # subset 10k val + mixture
     else:
         val_dataset = imagenet.build_lmdb_dataset_val10k(opt, log) # subset 10k val
@@ -118,15 +227,24 @@ def compute_batch(ckpt_opt, corrupt_type, corrupt_method, out):
         corrupt_img = clean_img * (1. - mask) + mask
         x1          = clean_img * (1. - mask) + mask * torch.randn_like(clean_img)
     elif corrupt_type == "mixture":
-        clean_img, corrupt_img, y = out
+        corrupt_img, seg_map = out
+        # clean_img, corrupt_img, seg_map = out
         mask = None
+        y = None # added
+        x1 = corrupt_img.to(opt.device) #added
     else:
         clean_img, y = out
         mask = None
         corrupt_img = corrupt_method(clean_img.to(opt.device))
         x1 = corrupt_img.to(opt.device)
 
-    cond = x1.detach() if ckpt_opt.cond_x1 else None #detach from gpu, move x1 to gpu to cpu for cond if cond_x1 = True
+    # cond = x1.detach() if ckpt_opt.cond_x1 else None #detach from gpu, move x1 to gpu to cpu for cond if cond_x1 = True
+    if opt.corrupt == "mixture" and opt.cond_x1: # added
+        cond = seg_map.detach().to(opt.device)
+        print("Conditional I2SB mode")
+    else:
+        cond = None
+
     if ckpt_opt.add_x1_noise: # only for decolor
         x1 = x1 + torch.randn_like(x1)
 
@@ -168,11 +286,10 @@ def main(opt):
     log.info(f"Recon images will be saved to {recon_imgs_fn}!")
 
     recon_imgs = []
-    ys = []
     num = 0
-    for loader_itr, out in enumerate(val_loader): #loader_itr = idx, and out = output of MixtureCorruptDatasetVal, which is three items: clean_img, corrupt_img, y
+    for loader_itr, out in enumerate(val_loader): #loader_itr = idx, and out = output of MixtureCorruptDatasetVal, which is three items: clean_img, corrupt_img, seg_map
 
-        corrupt_img, x1, mask, cond, y = compute_batch(ckpt_opt, corrupt_type, corrupt_method, out) # for mixture, x1 and mask should be empty.
+        corrupt_img, x1, mask, cond, y = compute_batch(ckpt_opt, corrupt_type, corrupt_method, out) #
 
         xs, _ = runner.ddpm_sampling(
             ckpt_opt, x1, mask=mask, cond=cond, clip_denoise=opt.clip_denoise, nfe=nfe, verbose=opt.n_gpu_per_node==1
@@ -191,9 +308,11 @@ def main(opt):
         gathered_recon_img = collect_all_subset(recon_img, log)
         recon_imgs.append(gathered_recon_img)
 
-        y = y.to(opt.device)
-        gathered_y = collect_all_subset(y, log)
-        ys.append(gathered_y)
+
+        if loader_itr % opt.save_every == 0:
+            arr = torch.cat(recon_imgs, axis=0)[:n_samples]
+            if opt.global_rank == 0:
+                torch.save({"arr": arr}, recon_imgs_fn)
 
         num += len(gathered_recon_img)
         log.info(f"Collected {num} recon images!")
@@ -202,15 +321,13 @@ def main(opt):
     del runner
 
     arr = torch.cat(recon_imgs, axis=0)[:n_samples]
-    label_arr = torch.cat(ys, axis=0)[:n_samples]
 
     if opt.global_rank == 0:
-        torch.save({"arr": arr, "label_arr": label_arr}, recon_imgs_fn)
+        torch.save({"arr": arr}, recon_imgs_fn)
         log.info(f"Save at {recon_imgs_fn}")
     dist.barrier()
 
-    log.info(f"Sampling complete! Collect recon_imgs={arr.shape}, ys={label_arr.shape}")
-
+    log.info(f"Sampling complete! Collect recon_imgs={arr.shape}")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -231,7 +348,13 @@ if __name__ == '__main__':
     parser.add_argument("--nfe",            type=int,  default=None,        help="sampling steps")
     parser.add_argument("--clip-denoise",   action="store_true",            help="clamp predicted image to [-1,1] at each")
     parser.add_argument("--use-fp16",       action="store_true",            help="use fp16 network weight for faster sampling")
+    # added to save recon.pt during sampling in case of crashing
+    parser.add_argument("--save-every", type=int, default=100, help="save sampled recon.pt every x dataloader iterations")
 
+    # added for conditional sampling
+    parser.add_argument("--corrupt", type=str, default="mixture", help="restoration task")
+    parser.add_argument("--cond-x1",        action="store_true",             help="conditional the network on degraded images")
+    parser.add_argument("--image-type", type=str, default="png", help="image type, specify for jpg, else png + all other types")
     arg = parser.parse_args()
 
     opt = edict(

@@ -30,8 +30,8 @@ class Image256Net(torch.nn.Module):
         with open(ckpt_pkl, "rb") as f:
             kwargs = pickle.load(f)
         kwargs["use_fp16"] = use_fp16
-        # kwargs["in_channels"] = 6 # added, this is input_channel + conditioning channel (3 + 3 = 6) since both are RGB images. Use this only if --cond-x1 is true
-        self.diffusion_model = create_model(**kwargs)
+        kwargs["in_channels"] = 6 # added, this has to be commented if uncond model
+        self.diffusion_model = create_model(**kwargs) #returns the UNetModel with above modified kwargs
         log.info(f"[Net] Initialized network from {ckpt_pkl=}! Size={util.count_parameters(self.diffusion_model)}!")
 
         # load (modified) adm ckpt
@@ -49,6 +49,5 @@ class Image256Net(torch.nn.Module):
 
         t = self.noise_levels[steps].detach()
         assert t.dim()==1 and t.shape[0] == x.shape[0]
-
-        x = torch.cat([x, cond], dim=1) if self.cond else x
-        return self.diffusion_model(x, t)
+        x = torch.cat([x, cond], dim=1) if self.cond else x #concat conditional image, how many ever channels has to be added to in_channels in kwargs above
+        return self.diffusion_model(x, t) #return output of UNetModel

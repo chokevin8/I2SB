@@ -48,14 +48,14 @@ def create_argparser():
         attention_resolutions='32,16,8',
         batch_size=4,
         channel_mult='',
-        class_cond=False,
+        class_cond=False, #cond/uncond
         clip_denoised=True,
         diffusion_steps=1000,
         dropout=0.0,
         image_size=256,
         learn_sigma=True,
-        adm_ckpt='256x256_diffusion_uncond.pt',
-        noise_schedule='linear',
+        adm_ckpt='256x256_diffusion_cond.pt', #cond/uncond
+        noise_schedule='linear', #linear/cosine
         num_channels=256,
         num_head_channels=64,
         num_heads=4,

@@ -120,14 +120,14 @@ class MixtureCorruptDatasetTrain(Dataset):
 
     def __getitem__(self, index):
         #modified below code (original is below):
-        clean_img, corrupt_img, y = self.dataset[index] # clean_img: tensor [-1,1]
+        clean_img, corrupt_img, seg_map = self.dataset[index] # clean_img: tensor [-1,1]
         # below is original code:
         # clean_img, y = self.dataset[index]  # clean_img: tensor [-1,1]
         # rand_idx = np.random.choice(AllCorrupt)
         # corrupt_img = self.method.mixture(clean_img.unsqueeze(0), rand_idx).squeeze(0)
 
         assert corrupt_img.shape == clean_img.shape, (clean_img.shape, corrupt_img.shape)
-        return clean_img, corrupt_img, y
+        return clean_img, corrupt_img, seg_map
 
 class MixtureCorruptDatasetVal(Dataset):
     def __init__(self, opt, dataset):
@@ -140,10 +140,14 @@ class MixtureCorruptDatasetVal(Dataset):
 
     def __getitem__(self, index):
         # same modification as above for train
-        clean_img, corrupt_img, y = self.dataset[index] # clean_img: tensor [-1,1]
+        # clean_img, corrupt_img, seg_map = self.dataset[index]
+        corrupt_img, seg_map = self.dataset[index]
+        # corrupt_img, seg_map  = self.dataset[index]
+        # clean_img, corrupt_img, y = self.dataset[index] # clean_img: tensor [-1,1]
         #
         # idx = index % len(AllCorrupt)
         # corrupt_img = self.method.mixture(clean_img.unsqueeze(0), idx, mask_index=idx).squeeze(0)
-
-        assert corrupt_img.shape == clean_img.shape, (clean_img.shape, corrupt_img.shape)
-        return clean_img, corrupt_img, y
+        return corrupt_img, seg_map
+        # return clean_img, corrupt_img, seg_map
+        # assert corrupt_img.shape == clean_img.shape, (clean_img.shape, corrupt_img.shape)
+        # return clean_img, corrupt_img, y

@@ -114,7 +114,7 @@ def create_training_options():
     os.makedirs(opt.ckpt_path, exist_ok=True)
 
     if opt.ckpt is not None:
-        ckpt_file = RESULT_DIR / opt.ckpt / "latest_old_5460.pt"
+        ckpt_file = RESULT_DIR / opt.ckpt / "latest.pt"
         assert ckpt_file.exists()
         opt.load = ckpt_file
     else:
@@ -129,8 +129,9 @@ class MyDataset(Dataset):
     def __init__(self,opt,log,train):
         super().__init__()
         self.dataset_dir = opt.dataset_dir / ('train' if train else 'val')
-        self.corrupt_dir = self.dataset_dir / 'IHC' # corrupt to clean -> IHC2HE
-        self.clean_dir = self.dataset_dir / 'HE'
+        self.corrupt_dir = self.dataset_dir / 'HE' # corrupt to clean -> IHC2HE
+        self.clean_dir = self.dataset_dir / 'IHC'
+        self.seg_map_dir = self.dataset_dir / 'HE_segmentation_map'
         self.image_size = opt.image_size
 
         if os.path.isdir(self.corrupt_dir):
@@ -144,6 +145,11 @@ class MyDataset(Dataset):
         else:
             raise IOError('clean path must point to a valid directory')
 
+        if os.path.isdir(self.seg_map_dir):
+            self.seg_map_fnames = [os.path.join(self.seg_map_dir, x) for x in os.listdir(self.seg_map_dir) if x.endswith(".tif")]
+        else:
+            raise IOError('seg_map path must point to a valid directory')
+
         self.corrupt_image_fnames = [fname for fname in self.corrupt_fnames if self._file_ext(fname) in '.png']
         self.corrupt_image_fnames = natsorted(self.corrupt_image_fnames)
         if len(self.corrupt_image_fnames) == 0:
@@ -151,17 +157,24 @@ class MyDataset(Dataset):
 
         self.clean_image_fnames = [fname for fname in self.clean_fnames if self._file_ext(fname) in '.png']
         self.clean_image_fnames = natsorted(self.clean_image_fnames)
-
         if len(self.clean_image_fnames) == 0:
             raise IOError('No clean image files found in the specified path')
 
+        self.seg_map_fnames = [fname for fname in self.seg_map_fnames if self._file_ext(fname) in '.tif']
+        self.seg_map_fnames = natsorted(self.seg_map_fnames)
+        if len(self.seg_map_fnames) == 0:
+            raise IOError('No seg_map image files found in the specified path')
+
         self.transform = T.Compose([
-            T.ToTensor(), # normalize [0,255] to [0,1]
+            # T.RandomHorizontalFlip(p=0.5), # added since tissue is not symmetric, but removed since may not be consistent with tissue map
+            # T.RandomVerticalFlip(p=0.5), # added since tissue is not symmetric, but removed since may not be consistent with tissue map
+            T.ToTensor(), # convert [0,255] to [0,1]
             T.Lambda(lambda t: (t * 2) - 1)  # convert [0,1] --> [-1, 1], since this is required in this training
         ])
 
         log.info(f"[Dataset] Built Imagenet dataset {self.corrupt_dir=}, size={len(self.corrupt_image_fnames)}!")
         log.info(f"[Dataset] Built Imagenet dataset {self.clean_dir=}, size={len(self.clean_image_fnames)}!")
+        log.info(f"[Dataset] Built Imagenet dataset {self.seg_map_dir=}, size={len(self.seg_map_fnames)}!") # added for seg map
 
     @staticmethod
     def _file_ext(fname):
@@ -175,15 +188,21 @@ class MyDataset(Dataset):
     def __getitem__(self, index):
         corrupt_fname = self.corrupt_image_fnames[index]
         clean_fname = self.clean_image_fnames[index]
+        seg_map_fname = self.seg_map_fnames[index] # added
         # print(corrupt_fname)
         # print(clean_fname)
+        # print(seg_map_fname)
         # if corrupt_fname.split("image")[1] != clean_fname.split("image")[1]: # for batch_size = 1 only
         #     print("Please look at training data again, the images are not paired.")
-        corrupt_img = self._file_to_array(os.path.join('IHC',corrupt_fname))
-        clean_img = self._file_to_array(os.path.join('HE',clean_fname))
+        corrupt_img = self._file_to_array(os.path.join('HE',corrupt_fname)) #IHC for IHC2HE, NS for NS2HE
+        clean_img = self._file_to_array(os.path.join('IHC',clean_fname)) # HE for both.
+        seg_img = self._file_to_array(os.path.join('HE_segmentation_map',seg_map_fname))
         corrupt_img = self.transform(corrupt_img)
         clean_img = self.transform(clean_img)
-        return clean_img, corrupt_img, clean_img #clean_img, corrupt_img, y is original
+        seg_map = self.transform(seg_img)
+        # seg_map = torch.from_numpy(seg_img) # need to conserve the uint8 nature of the mask
+        return clean_img, corrupt_img, seg_map # added code
+        # return clean_img, corrupt_img, clean_img # original code is this
 
 def main(opt):
     log = Logger(opt.global_rank, opt.log_dir)

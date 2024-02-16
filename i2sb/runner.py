@@ -72,27 +72,27 @@ def all_cat_cpu(opt, log, t):
     gathered_t = dist_util.all_gather(t.to(opt.device), log=log)
     return torch.cat(gathered_t).detach().cpu()
 
-class VGGLoss(nn.Module):
-    def __init__(self,layer=8, reduction='mean'):
-        super().__init__()
-        self.reduction = reduction
-        self.normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                              std=[0.229, 0.224, 0.225])
-        self.model = vgg16(pretrained=True).features[:layer + 1].cuda()
-        self.model.eval()
-        self.model.requires_grad_(False)
-    def normalize_image(self,input):
-        return (input+1)/2
-    def get_features(self, input):
-        return self.model(self.normalize(input))
-    def forward(self, input, target):
-        sep = input.shape[0]
-        input = self.normalize_image(input)
-        target = self.normalize_image(target)
-        batch = torch.cat([input, target])
-        feats = self.get_features(batch)
-        input_feats, target_feats = feats[:sep], feats[sep:]
-        return F.mse_loss(input_feats, target_feats, reduction=self.reduction)
+# class VGGLoss(nn.Module):
+#     def __init__(self,layer=8, reduction='mean'):
+#         super().__init__()
+#         self.reduction = reduction
+#         self.normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+#                                               std=[0.229, 0.224, 0.225])
+#         self.model = vgg16(pretrained=True).features[:layer + 1].cuda()
+#         self.model.eval()
+#         self.model.requires_grad_(False)
+#     def normalize_image(self,input):
+#         return (input+1)/2
+#     def get_features(self, input):
+#         return self.model(self.normalize(input))
+#     def forward(self, input, target):
+#         sep = input.shape[0]
+#         input = self.normalize_image(input)
+#         target = self.normalize_image(target)
+#         batch = torch.cat([input, target])
+#         feats = self.get_features(batch)
+#         input_feats, target_feats = feats[:sep], feats[sep:]
+#         return F.mse_loss(input_feats, target_feats, reduction=self.reduction)
 
 class Runner(object):
     def __init__(self, opt, log, save_opt=True):
@@ -141,7 +141,8 @@ class Runner(object):
 
     def sample_batch(self, opt, loader, corrupt_method):
         if opt.corrupt == "mixture":
-            clean_img, corrupt_img, y = next(loader)
+            clean_img, corrupt_img, seg_map = next(loader) # used to be clean_img, corrupt_img, y
+            y = None
             mask = None
         elif "inpaint" in opt.corrupt:
             clean_img, y = next(loader)
@@ -158,20 +159,25 @@ class Runner(object):
         # tu.save_image((corrupt_img+1)/2, ".debug/corrupt.png", nrow=4)
         # debug()
 
-        y  = y.detach().to(opt.device)
+        # y  = y.detach().to(opt.device)
         x0 = clean_img.detach().to(opt.device)
         x1 = corrupt_img.detach().to(opt.device)
+
         if mask is not None:
             mask = mask.detach().to(opt.device)
             x1 = (1. - mask) * x1 + mask * torch.randn_like(x1)
-        cond = x1.detach() if opt.cond_x1 else None
+        # cond = x1.detach() if opt.cond_x1 else None #original code line, where cond is simply x1 detached, but this is changed to segmentation map instead!
+        if opt.corrupt == "mixture" and opt.cond_x1:
+            cond = seg_map.detach().to(opt.device)
+        else:
+            cond = None
 
         if opt.add_x1_noise: # only for decolor
             x1 = x1 + torch.randn_like(x1)
 
         assert x0.shape == x1.shape
 
-        return x0, x1, mask, y, cond
+        return x0, x1, mask, y, cond #cond is seg_map instead
 
     #implementation of VGGLoss (added by kevin, modified from https://github.com/crowsonkb/vgg_loss/blob/master/vgg_loss.py)
 
@@ -191,7 +197,7 @@ class Runner(object):
         self.resnet = build_resnet50().to(opt.device)
 
         net.train()
-        n_inner_loop = opt.batch_size // (opt.global_size * opt.microbatch)
+        n_inner_loop = opt.batch_size // (opt.global_size * opt.microbatch) # for single GPU, global_size = 1 always
         for it in range(opt.num_itr):
             optimizer.zero_grad()
 
@@ -202,10 +208,11 @@ class Runner(object):
                 # ===== compute loss =====
                 step = torch.randint(0, opt.interval, (x0.shape[0],))
 
-                xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode)
-                label = self.compute_label(step, x0, xt)
+                xt = self.diffusion.q_sample(step, x0, x1, ot_ode=opt.ot_ode) # our predicted xt
+                label = self.compute_label(step, x0, xt) # ground_truth
 
-                pred = net(xt, step, cond=cond)
+                pred = net(xt, step, cond=cond) #cond here is the seg_map from sample batch above, which is concatenated on Image256Net(UNet) in network.py
+                # pred returns the output of the UNet, which is the predicted image!
                 assert xt.shape == label.shape == pred.shape
 
                 if mask is not None:
@@ -224,7 +231,7 @@ class Runner(object):
                 # print(VGGLoss()(pred,label))
                 # print(F.l1_loss(pred, label))
 
-                loss = F.mse_loss(pred,label)
+                loss = F.mse_loss(pred,label) #+ 0.1 * vit_loss
                 loss.backward()
 
             optimizer.step()
@@ -261,6 +268,7 @@ class Runner(object):
                 net.train()
         self.writer.close()
 
+    # for sampling:
     @torch.no_grad()
     def ddpm_sampling(self, opt, x1, mask=None, cond=None, clip_denoise=False, nfe=None, log_count=10, verbose=True):
 
@@ -317,14 +325,14 @@ class Runner(object):
         log.info("Collecting tensors ...")
         img_clean   = all_cat_cpu(opt, log, img_clean)
         img_corrupt = all_cat_cpu(opt, log, img_corrupt)
-        y           = all_cat_cpu(opt, log, y)
+        # y           = all_cat_cpu(opt, log, y)
         xs          = all_cat_cpu(opt, log, xs)
         pred_x0s    = all_cat_cpu(opt, log, pred_x0s)
 
         batch, len_t, *xdim = xs.shape
         assert img_clean.shape == img_corrupt.shape == (batch, *xdim)
         assert xs.shape == pred_x0s.shape
-        # assert y.shape == (batch,)
+        # assert y.shape == (batch,) #commented out if not using classification label
         log.info(f"Generated recon trajectories: size={xs.shape}")
 
         def log_image(tag, img, nrow=10):

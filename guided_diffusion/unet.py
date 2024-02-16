@@ -42,21 +42,21 @@ class AttentionPool2d(nn.Module):
         super().__init__()
         self.positional_embedding = nn.Parameter(
             th.randn(embed_dim, spacial_dim ** 2 + 1) / embed_dim ** 0.5
-        )
-        self.qkv_proj = conv_nd(1, embed_dim, 3 * embed_dim, 1)
-        self.c_proj = conv_nd(1, embed_dim, output_dim or embed_dim, 1)
+        ) #positional embedding for each spatial location
+        self.qkv_proj = conv_nd(1, embed_dim, 3 * embed_dim, 1) #conv 2d layer that projects input features to qkv vectors
+        self.c_proj = conv_nd(1, embed_dim, output_dim or embed_dim, 1) #conv 2d layer that projects attention output to desired output dim
         self.num_heads = embed_dim // num_heads_channels
-        self.attention = QKVAttention(self.num_heads)
+        self.attention = QKVAttention(self.num_heads) #multi-head attention
 
     def forward(self, x):
         b, c, *_spatial = x.shape
-        x = x.reshape(b, c, -1)  # NC(HW)
-        x = th.cat([x.mean(dim=-1, keepdim=True), x], dim=-1)  # NC(HW+1)
-        x = x + self.positional_embedding[None, :, :].to(x.dtype)  # NC(HW+1)
-        x = self.qkv_proj(x)
-        x = self.attention(x)
-        x = self.c_proj(x)
-        return x[:, :, 0]
+        x = x.reshape(b, c, -1)  #NC(HW)
+        x = th.cat([x.mean(dim=-1, keepdim=True), x], dim=-1)  #NC(HW+1) concatenate mean of spatial and original features tensors
+        x = x + self.positional_embedding[None, :, :].to(x.dtype)  #NC(HW+1) add positional embedding to tensor
+        x = self.qkv_proj(x) #apply/project qkv projection layer
+        x = self.attention(x) #compute attention output using QKVAttention (multihead attention)
+        x = self.c_proj(x) #project conv 2d layer which project attention to desired output dim
+        return x[:, :, 0] # first element of output tensor is the pooled representation, attention-baesd pooling returns summary of spatial information that preserves most informative features from 2d spatial features.
 
 
 class TimestepBlock(nn.Module):
@@ -443,8 +443,8 @@ class UNetModel(nn.Module):
         dropout=0,
         channel_mult=(1, 2, 4, 8),
         conv_resample=True,
-        dims=2,
-        num_classes=None,
+        dims=2, #2d images
+        num_classes=None, #None is default
         use_checkpoint=False,
         use_fp16=False,
         num_heads=1,
@@ -482,9 +482,8 @@ class UNetModel(nn.Module):
             linear(time_embed_dim, time_embed_dim),
         )
 
-        if self.num_classes is not None:
-            self.label_emb = nn.Embedding(num_classes, time_embed_dim)
-
+        if self.num_classes is not None: # if we have classes, we add additional embedding of classes
+            self.label_emb = nn.Embedding(num_classes, time_embed_dim) # embedding layer with 3 words and time_embed_dim dimension embedding vectors
         ch = input_ch = int(channel_mult[0] * model_channels)
         self.input_blocks = nn.ModuleList(
             [TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1))]
@@ -653,22 +652,23 @@ class UNetModel(nn.Module):
         ), "must specify y if and only if the model is class-conditional"
 
         hs = []
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels)) #embed timestep information here
 
         if self.num_classes is not None:
-            assert y.shape == (x.shape[0],)
-            emb = emb + self.label_emb(y)
+            assert y.shape == (x.shape[0],) #same batch size
+            emb = emb + self.label_emb(y) #self.label_emb(y) fetches the embedding representation of y
 
         h = x.type(self.dtype)
-        for module in self.input_blocks:
+        for module in self.input_blocks: # loop through input_blocks module, which is series of TimestepEmbedSequential blocks
             h = module(h, emb)
-            hs.append(h)
-        h = self.middle_block(h, emb)
-        for module in self.output_blocks:
-            h = th.cat([h, hs.pop()], dim=1)
+            hs.append(h) # hs used for skip connection
+        h = self.middle_block(h, emb) # apply middle_block, which is three ResBlocks and one AttentionBlock
+        for module in self.output_blocks: # loop thorugh output_blocks module, which is similar to input_blocks but with upsampling instead of downsampling
+            h = th.cat([h, hs.pop()], dim=1) # skip connection
             h = module(h, emb)
         h = h.type(x.dtype)
-        return self.out(h)
+        return self.out(h) # self.out does normalization, SiLU and convolution to feature map to make sure we have desired output channel
+    # this self.out is the predicted image, output of UNet model!
 
 
 class SuperResModel(UNetModel):
